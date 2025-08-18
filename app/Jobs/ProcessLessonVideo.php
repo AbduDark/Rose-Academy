@@ -37,6 +37,12 @@ class ProcessLessonVideo implements ShouldQueue
                 throw new \Exception("ملف الفيديو غير موجود: {$videoPath}");
             }
 
+            $videoSize = filesize($videoPath);
+            Log::info("حجم الفيديو: " . number_format($videoSize / 1024 / 1024, 2) . " MB");
+
+            // التحقق من توفر FFmpeg
+            $this->checkFFmpegAvailability();
+
             // إنشاء المجلدات المطلوبة
             $outputDir = storage_path("app/private_videos/hls/lesson_{$this->lesson->id}");
             $this->createDirectories($outputDir);
@@ -57,12 +63,15 @@ class ProcessLessonVideo implements ShouldQueue
             ]);
 
             // حذف الفيديو المؤقت
-            Storage::delete($this->lesson->video_path);
+            if (file_exists($videoPath)) {
+                Storage::delete($this->lesson->video_path);
+            }
 
             Log::info("تم الانتهاء من معالجة فيديو الدرس: {$this->lesson->id}");
 
         } catch (\Exception $e) {
             Log::error("خطأ في معالجة فيديو الدرس {$this->lesson->id}: " . $e->getMessage());
+            Log::error("Stack trace: " . $e->getTraceAsString());
 
             $this->lesson->update(['video_status' => 'failed']);
 
@@ -71,6 +80,21 @@ class ProcessLessonVideo implements ShouldQueue
 
             throw $e;
         }
+    }
+
+    /**
+     * التحقق من توفر FFmpeg
+     */
+    private function checkFFmpegAvailability(): void
+    {
+        $process = new Process(['ffmpeg', '-version']);
+        $process->run();
+
+        if (!$process->isSuccessful()) {
+            throw new \Exception("FFmpeg غير متوفر في النظام. يرجى تثبيته أولاً.");
+        }
+
+        Log::info("FFmpeg متوفر: " . trim(explode("\n", $process->getOutput())[0]));
     }
 
     /**
@@ -125,55 +149,68 @@ class ProcessLessonVideo implements ShouldQueue
     {
         $outputFile = "{$outputDir}/index.m3u8";
 
-        // أوامر FFmpeg المحسنة للجودة والأمان
+        // أوامر FFmpeg محسنة للملفات الصغيرة
         $command = [
             'ffmpeg',
             '-i', $inputPath,
 
             // إعدادات الفيديو
             '-c:v', 'libx264',
-            '-preset', 'medium',
-            '-crf', '23',
-            '-maxrate', '2M',
-            '-bufsize', '4M',
-            '-vf', 'scale=-2:720', // دقة 720p مع الحفاظ على النسبة
+            '-preset', 'fast', // أسرع في المعالجة
+            '-crf', '28', // جودة مناسبة للملفات الصغيرة
+            '-maxrate', '1M',
+            '-bufsize', '2M',
+            '-vf', 'scale=-2:480', // دقة أقل للملفات الصغيرة
 
             // إعدادات الصوت
             '-c:a', 'aac',
-            '-b:a', '128k',
+            '-b:a', '96k', // bitrate أقل للصوت
             '-ar', '44100',
 
             // إعدادات HLS
             '-f', 'hls',
-            '-hls_time', '6', // مقاطع أقصر لأمان أكثر
+            '-hls_time', '10', // مقاطع أطول لملفات أقل
             '-hls_list_size', '0',
             '-hls_segment_filename', "{$outputDir}/segment_%03d.ts",
 
             // إعدادات التشفير
             '-hls_key_info_file', $keyData['key_info_file'],
-            '-hls_flags', 'delete_segments+omit_endlist',
+            '-hls_flags', 'delete_segments',
 
             // إعدادات إضافية للأمان
-            '-hls_base_url', '', // منع تسريب المسار الحقيقي
+            '-hls_base_url', '',
 
             // ملف الإخراج
             $outputFile,
 
-            // إخفاء المخرجات
-            '-loglevel', 'error',
-            '-y' // الكتابة فوق الملفات الموجودة
+            // مخرجات مفصلة للتشخيص
+            '-loglevel', 'info',
+            '-y'
         ];
 
         $process = new Process($command);
-        $process->setTimeout(3600); // مهلة ساعة
+        $process->setTimeout(1800); // 30 دقيقة للملفات الصغيرة
 
         Log::info("تشغيل أمر FFmpeg للدرس {$this->lesson->id}");
+        Log::info("أمر FFmpeg: " . implode(' ', $command));
 
-        $process->run();
+        $startTime = microtime(true);
+        
+        $process->run(function ($type, $buffer) {
+            if ($type === Process::ERR) {
+                Log::info("FFmpeg output: " . trim($buffer));
+            }
+        });
+
+        $processingTime = round(microtime(true) - $startTime, 2);
+        Log::info("مدة المعالجة: {$processingTime} ثانية");
 
         if (!$process->isSuccessful()) {
             $error = $process->getErrorOutput();
-            Log::error("فشل FFmpeg للدرس {$this->lesson->id}: " . $error);
+            $output = $process->getOutput();
+            Log::error("فشل FFmpeg للدرس {$this->lesson->id}");
+            Log::error("خطأ: " . $error);
+            Log::error("المخرجات: " . $output);
             throw new ProcessFailedException($process);
         }
 
