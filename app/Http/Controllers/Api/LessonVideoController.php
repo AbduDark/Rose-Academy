@@ -49,12 +49,22 @@ class LessonVideoController extends Controller
                 'video_status' => 'processing'
             ]);
 
-            // بدء معالجة الفيديو في الخلفية
-            ProcessLessonVideo::dispatch($lesson);
+            // إضافة Job لمعالجة الفيديو
+            ProcessLessonVideo::dispatch($lesson, $request->video->getClientOriginalExtension());
 
-            return $this->successResponse([
-                'message' => 'تم رفع الفيديو بنجاح، جاري المعالجة والتشفير...',
-                'lesson_id' => $lesson->id,
+            // إذا فشل Queue، معالجة مباشرة (للتطوير فقط)
+            if (config('app.env') === 'local') {
+                try {
+                    $job = new ProcessLessonVideo($lesson, $request->video->getClientOriginalExtension());
+                    $job->handle();
+                } catch (\Exception $e) {
+                    Log::error('Direct video processing failed: ' . $e->getMessage());
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'تم رفع الفيديو بنجاح، وجاري معالجته...',
                 'status' => 'processing',
                 'upload_progress' => 100,
                 'processing_progress' => 0,

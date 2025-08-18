@@ -29,54 +29,91 @@ class ProcessLessonVideo implements ShouldQueue
     public function handle()
     {
         try {
-            Log::info("بدء معالجة فيديو الدرس: {$this->lesson->id}");
+            Log::info('Starting video processing for lesson: ' . $this->lesson->id);
 
-            // التحقق من وجود الفيديو
-            $videoPath = storage_path("app/{$this->lesson->video_path}");
+            $videoPath = storage_path('app/private_videos/original_videos/lesson_' . $this->lesson->id . '_video.' . $this->extension);
+
             if (!file_exists($videoPath)) {
-                throw new \Exception("ملف الفيديو غير موجود: {$videoPath}");
+                throw new \Exception('Video file not found: ' . $videoPath);
             }
 
-            $videoSize = filesize($videoPath);
-            Log::info("حجم الفيديو: " . number_format($videoSize / 1024 / 1024, 2) . " MB");
+            Log::info('Video file found: ' . $videoPath);
 
-            // التحقق من توفر FFmpeg
-            $this->checkFFmpegAvailability();
+            // تحديث التقدم إلى 10%
+            $this->lesson->update(['video_processing_progress' => 10]);
 
-            // إنشاء المجلدات المطلوبة
-            $outputDir = storage_path("app/private_videos/hls/lesson_{$this->lesson->id}");
-            $this->createDirectories($outputDir);
+            // إنشاء مجلد HLS للدرس
+            $hlsDir = storage_path('app/private_videos/hls/lesson_' . $this->lesson->id);
+            if (!is_dir($hlsDir)) {
+                mkdir($hlsDir, 0755, true);
+            }
 
-            // توليد مفاتيح التشفير
-            $keyData = $this->generateEncryptionKeys($outputDir);
+            // تحديث التقدم إلى 20%
+            $this->lesson->update(['video_processing_progress' => 20]);
 
-            // معالجة الفيديو باستخدام FFmpeg
-            $this->processVideoWithFFmpeg($videoPath, $outputDir, $keyData);
+            // تشفير الفيديو إلى HLS
+            $keyFile = $hlsDir . '/key.key';
+            $keyInfoFile = $hlsDir . '/key.keyinfo';
+            $playlistFile = $hlsDir . '/index.m3u8';
 
-            // التحقق من نجاح المعالجة
-            $this->verifyProcessing($outputDir);
+            // إنشاء مفتاح التشفير
+            $encryptionKey = bin2hex(random_bytes(16));
+            file_put_contents($keyFile, hex2bin($encryptionKey));
 
-            // تحديث قاعدة البيانات
+            // تحديث التقدم إلى 30%
+            $this->lesson->update(['video_processing_progress' => 30]);
+
+            // إنشاء ملف معلومات المفتاح
+            $keyInfo = "key.key\n" . asset('api/lesson/' . $this->lesson->id . '/encryption-key') . "\n" . $encryptionKey;
+            file_put_contents($keyInfoFile, $keyInfo);
+
+            // تحديث التقدم إلى 40%
+            $this->lesson->update(['video_processing_progress' => 40]);
+
+            Log::info('Starting FFmpeg conversion for lesson: ' . $this->lesson->id);
+
+            // تحويل الفيديو باستخدام FFmpeg
+            $ffmpegCommand = "ffmpeg -i \"$videoPath\" -hls_time 10 -hls_key_info_file \"$keyInfoFile\" -hls_playlist_type vod -hls_segment_filename \"$hlsDir/segment_%03d.ts\" \"$playlistFile\"";
+
+            // تحديث التقدم إلى 50%
+            $this->lesson->update(['video_processing_progress' => 50]);
+
+            exec($ffmpegCommand . ' 2>&1', $output, $returnCode);
+
+            if ($returnCode !== 0) {
+                Log::error('FFmpeg failed: ' . implode("\n", $output));
+                throw new \Exception('FFmpeg failed: ' . implode("\n", $output));
+            }
+
+            // تحديث التقدم إلى 80%
+            $this->lesson->update(['video_processing_progress' => 80]);
+
+            Log::info('FFmpeg conversion completed for lesson: ' . $this->lesson->id);
+
+            // تحديث بيانات الدرس
             $this->lesson->update([
-                'video_path' => "private_videos/hls/lesson_{$this->lesson->id}/index.m3u8",
-                'video_status' => 'ready'
+                'video_status' => 'processed',
+                'video_processing_progress' => 100,
+                'video_encryption_key' => $encryptionKey,
+                'video_hls_path' => 'private_videos/hls/lesson_' . $this->lesson->id . '/index.m3u8'
             ]);
 
-            // حذف الفيديو المؤقت
+            Log::info('Video processing completed successfully for lesson: ' . $this->lesson->id);
+
+            // حذف الفيديو الأصلي لتوفير المساحة
             if (file_exists($videoPath)) {
-                Storage::delete($this->lesson->video_path);
+                unlink($videoPath);
+                Log::info('Original video file deleted for lesson: ' . $this->lesson->id);
             }
 
-            Log::info("تم الانتهاء من معالجة فيديو الدرس: {$this->lesson->id}");
-
         } catch (\Exception $e) {
-            Log::error("خطأ في معالجة فيديو الدرس {$this->lesson->id}: " . $e->getMessage());
-            Log::error("Stack trace: " . $e->getTraceAsString());
+            Log::error('Video processing failed for lesson: ' . $this->lesson->id . ' - Error: ' . $e->getMessage());
 
-            $this->lesson->update(['video_status' => 'failed']);
-
-            // تنظيف الملفات في حالة الفشل
-            $this->cleanup();
+            // تحديث حالة الخطأ
+            $this->lesson->update([
+                'video_status' => 'failed',
+                'video_processing_progress' => 0
+            ]);
 
             throw $e;
         }
@@ -195,7 +232,7 @@ class ProcessLessonVideo implements ShouldQueue
         Log::info("أمر FFmpeg: " . implode(' ', $command));
 
         $startTime = microtime(true);
-        
+
         $process->run(function ($type, $buffer) {
             if ($type === Process::ERR) {
                 Log::info("FFmpeg output: " . trim($buffer));
