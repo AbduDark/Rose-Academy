@@ -23,9 +23,18 @@ class LessonVideoController extends Controller
     public function upload(Request $request, $lessonId)
     {
         try {
+            // Validate video file
             $request->validate([
-                'video' => 'required|mimes:mp4,mov,avi,wmv,flv,webm|max:512000' // 500MB
+                'video' => 'required|file|mimes:mp4,mov,avi,wmv,webm|max:204800' // 200MB max
             ]);
+
+            // التحقق من أن الملف ليس فارغ
+            if ($request->file('video')->getSize() == 0) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'ملف الفيديو فارغ'
+                ], 400);
+            }
 
             $lesson = Lesson::findOrFail($lessonId);
 
