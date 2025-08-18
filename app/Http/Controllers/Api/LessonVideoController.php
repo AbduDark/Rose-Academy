@@ -58,7 +58,7 @@ class LessonVideoController extends Controller
                 'status' => 'processing',
                 'upload_progress' => 100,
                 'processing_progress' => 0,
-                'status_url' => route('lesson.video.status', $lesson->id)
+                'status_url' => route('lesson.status', $lesson->id)
             ]);
 
         } catch (\Exception $e) {
