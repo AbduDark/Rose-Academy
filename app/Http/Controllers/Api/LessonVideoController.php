@@ -55,7 +55,10 @@ class LessonVideoController extends Controller
             return $this->successResponse([
                 'message' => 'تم رفع الفيديو بنجاح، جاري المعالجة والتشفير...',
                 'lesson_id' => $lesson->id,
-                'status' => 'processing'
+                'status' => 'processing',
+                'upload_progress' => 100,
+                'processing_progress' => 0,
+                'status_url' => route('lesson.video.status', $lesson->id)
             ]);
 
         } catch (\Exception $e) {
@@ -174,12 +177,28 @@ class LessonVideoController extends Controller
      */
     public function getProcessingStatus(Lesson $lesson)
     {
-        return response()->json([
+        $status = $lesson->video_status ?? 'not_uploaded';
+        $progress = match($status) {
+            'processing' => 50,
+            'ready' => 100,
+            'failed' => 0,
+            default => 0
+        };
+
+        $response = [
             'lesson_id' => $lesson->id,
-            'status' => $lesson->video_status ?? 'not_uploaded',
-            'video_available' => $lesson->video_status === 'ready',
-            'message' => $this->getStatusMessage($lesson->video_status ?? 'not_uploaded')
-        ]);
+            'status' => $status,
+            'processing_progress' => $progress,
+            'video_available' => $status === 'ready',
+            'message' => $this->getStatusMessage($status)
+        ];
+
+        if ($status === 'ready') {
+            $response['playlist_url'] = $lesson->getVideoPlaylistUrl();
+            $response['encryption_key_url'] = route('lesson.key', ['lesson' => $lesson->id]);
+        }
+
+        return response()->json($response);
     }
 
     /**
