@@ -24,7 +24,7 @@ class ProcessLessonVideo implements ShouldQueue
      *
      * @var int
      */
-    public $tries = 3;
+    public $tries = 5;
 
     /**
      * The maximum number of seconds the job should run.
@@ -39,6 +39,7 @@ class ProcessLessonVideo implements ShouldQueue
     public function __construct(Lesson $lesson)
     {
         $this->lesson = $lesson;
+        $this->onQueue('video-processing');
     }
 
     /**
@@ -53,6 +54,7 @@ class ProcessLessonVideo implements ShouldQueue
             $lesson = Lesson::find($this->lesson->id);
             if (!$lesson) {
                 Log::error("الدرس غير موجود: {$this->lesson->id}");
+                $this->fail(new \Exception("الدرس غير موجود"));
                 return;
             }
 
@@ -60,15 +62,17 @@ class ProcessLessonVideo implements ShouldQueue
             if (empty($lesson->video_path)) {
                 Log::error("مسار الفيديو فارغ للدرس: {$lesson->id}");
                 $lesson->update(['video_status' => 'failed']);
+                $this->fail(new \Exception("مسار الفيديو فارغ"));
                 return;
             }
 
-            $videoPath = storage_path('app/private/' . $lesson->video_path);
+            $videoPath = storage_path('app/' . $lesson->video_path);
             $outputDir = storage_path("app/private_videos/hls/lesson_{$lesson->id}");
 
             if (!file_exists($videoPath)) {
                 Log::error("ملف الفيديو غير موجود: {$videoPath}");
                 $lesson->update(['video_status' => 'failed']);
+                $this->fail(new \Exception("ملف الفيديو غير موجود"));
                 return;
             }
 
@@ -76,6 +80,7 @@ class ProcessLessonVideo implements ShouldQueue
             if (filesize($videoPath) == 0) {
                 Log::error("ملف الفيديو فارغ: {$videoPath}");
                 $lesson->update(['video_status' => 'failed']);
+                $this->fail(new \Exception("ملف الفيديو فارغ"));
                 return;
             }
 
@@ -93,20 +98,37 @@ class ProcessLessonVideo implements ShouldQueue
             if (empty($ffmpegCheck)) {
                 Log::error("FFmpeg غير مثبت على الخادم");
                 $lesson->update(['video_status' => 'failed']);
+                $this->fail(new \Exception("FFmpeg غير متوفر"));
                 return;
             }
 
-            // Generate HLS segments using FFmpeg
-            $command = "timeout 1800 ffmpeg -i \"{$videoPath}\" " .
-                      "-profile:v baseline -level 3.0 " .
-                      "-start_number 0 -hls_time 10 -hls_list_size 0 " .
-                      "-f hls \"{$outputDir}/index.m3u8\"";
+            // إنشاء مجلد الإخراج
+            if (!is_dir($outputDir)) {
+                if (!mkdir($outputDir, 0755, true)) {
+                    Log::error("فشل في إنشاء مجلد الإخراج: {$outputDir}");
+                    $lesson->update(['video_status' => 'failed']);
+                    $this->fail(new \Exception("فشل في إنشاء مجلد الإخراج"));
+                    return;
+                }
+            }
+
+            // تحديث حالة المعالجة
+            $lesson->update(['video_status' => 'processing']);
+
+            // Generate HLS segments using FFmpeg with better error handling
+            $command = "timeout 1800 ffmpeg -i " . escapeshellarg($videoPath) . " " .
+                      "-c:v libx264 -preset fast -crf 23 " .
+                      "-c:a aac -b:a 128k " .
+                      "-hls_time 10 -hls_list_size 0 -hls_segment_filename " .
+                      escapeshellarg($outputDir . "/segment_%03d.ts") . " " .
+                      "-f hls " . escapeshellarg($outputDir . "/index.m3u8") . " 2>&1";
 
             Log::info("تشغيل أمر FFmpeg للدرس: {$lesson->id}");
+            Log::info("الأمر: {$command}");
 
             $output = [];
             $returnCode = 0;
-            exec($command . " 2>&1", $output, $returnCode);
+            exec($command, $output, $returnCode);
 
             if ($returnCode === 0 && file_exists($outputDir . '/index.m3u8')) {
                 // Generate encryption key
@@ -156,7 +178,8 @@ class ProcessLessonVideo implements ShouldQueue
     public function failed(\Throwable $exception): void
     {
         Log::error("فشل نهائي في معالجة الفيديو للدرس: {$this->lesson->id}", [
-            'error' => $exception->getMessage()
+            'error' => $exception->getMessage(),
+            'trace' => $exception->getTraceAsString()
         ]);
 
         // تحديث حالة الدرس إلى فاشل
@@ -164,6 +187,17 @@ class ProcessLessonVideo implements ShouldQueue
         if ($lesson) {
             $lesson->update(['video_status' => 'failed']);
         }
+
+        // تنظيف الملفات المؤقتة
+        $this->cleanup();
+    }
+
+    /**
+     * Calculate the number of seconds to wait before retrying the job.
+     */
+    public function retryAfter(): int
+    {
+        return 30; // انتظار 30 ثانية بين المحاولات
     }
 
     /**

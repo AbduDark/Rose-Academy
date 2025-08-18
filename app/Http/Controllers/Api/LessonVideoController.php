@@ -58,17 +58,18 @@ class LessonVideoController extends Controller
                 'video_status' => 'processing'
             ]);
 
-            // إضافة Job لمعالجة الفيديو
-            ProcessLessonVideo::dispatch($lesson, $request->video->getClientOriginalExtension());
+            // التحقق من عدم وجود job معالجة مسبقًا
+            $existingJobs = \DB::table('jobs')
+                ->where('payload', 'like', '%ProcessLessonVideo%')
+                ->where('payload', 'like', '%"lesson_id":' . $lesson->id . '%')
+                ->count();
 
-            // إذا فشل Queue، معالجة مباشرة (للتطوير فقط)
-            if (config('app.env') === 'local') {
-                try {
-                    $job = new ProcessLessonVideo($lesson, $request->video->getClientOriginalExtension());
-                    $job->handle();
-                } catch (\Exception $e) {
-                    Log::error('Direct video processing failed: ' . $e->getMessage());
-                }
+            if ($existingJobs == 0) {
+                // إضافة Job لمعالجة الفيديو
+                ProcessLessonVideo::dispatch($lesson)->onQueue('video-processing');
+                Log::info("تم إضافة job معالجة الفيديو للدرس: {$lesson->id}");
+            } else {
+                Log::info("يوجد job معالجة فيديو قيد التنفيذ للدرس: {$lesson->id}");
             }
 
             return response()->json([
