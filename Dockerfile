@@ -33,14 +33,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
 WORKDIR /var/www/html
 
 # Copy composer files
-COPY composer.json composer.lock ./
+
 
 # Install PHP dependencies
 RUN composer install --no-dev --optimize-autoloader --no-scripts
-
-# Copy package.json and install Node dependencies
-COPY package*.json ./
-RUN npm ci --only=production
 
 # Copy application code
 COPY . .

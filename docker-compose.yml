@@ -8,7 +8,6 @@ services:
     volumes:
       - .:/var/www/html
       - /var/www/html/vendor
-      - /var/www/html/node_modules
     environment:
       - APP_ENV=${APP_ENV}
       - APP_DEBUG=${APP_DEBUG}
